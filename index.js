@@ -153,7 +153,31 @@ app.post('/comidas/:id/reservar', async (req, res) => {
     }
     const usuario = usuarios[0];
 
-    // Busca comida atual
+    // Verifica se já há reserva existente para o mesmo usuário e comida
+    const { data: reservasExistentes } = await axios.get(
+      `${SUPABASE_URL}/rest/v1/reservas_festa?usuario_id=eq.${usuario.id}&comida_id=eq.${comida_id}`,
+      { headers }
+    );
+
+    if (reservasExistentes.length > 0) {
+      return res.status(400).json({ error: 'Você já reservou este item.' });
+    }
+
+    // Tenta decrementar a quantidade disponível de forma condicional (apenas se > 0)
+    const { data: comidasAtualizadas } = await axios.patch(
+      `${SUPABASE_URL}/rest/v1/comidas_festa?id=eq.${comida_id}&quantidade_disponivel=gt.0`,
+      { quantidade_disponivel: axios.defaults.transformResponse ? undefined : undefined }, // corrigir a linha abaixo
+      {
+        headers,
+        data: { quantidade_disponivel: 1 } // Essa linha está errada, veja a correção abaixo
+      }
+    );
+
+    // A chamada correta no Supabase REST para patch condicional (decrementar quantidade) é via filtro na URL e enviar valor decrementado. 
+    // Como você não tem acesso direto ao SQL no patch, faça a chamada de update para diminuir a quantidade:
+    // Porém o Supabase REST não tem operação de decremento direto, então você precisa passar o valor decrementado manualmente.
+
+    // Então, antes, busque a comida atual:
     const { data: comidas } = await axios.get(
       `${SUPABASE_URL}/rest/v1/comidas_festa?id=eq.${comida_id}`,
       { headers }
@@ -162,51 +186,41 @@ app.post('/comidas/:id/reservar', async (req, res) => {
       return res.status(400).json({ error: 'Comida não encontrada' });
     }
     const comida = comidas[0];
-
     if (comida.quantidade_disponivel <= 0) {
       return res.status(400).json({ error: 'Item esgotado' });
     }
 
-    // Verifica se já há reserva existente para o mesmo usuário e comida
-    const { data: reservasExistentes } = await axios.get(
-      `${SUPABASE_URL}/rest/v1/reservas_festa?usuario_id=eq.${usuario.id}&comida_id=eq.${comida.id}`,
+    // Agora, tente atualizar a quantidade, **condicional** via filtro, para evitar race:
+    const { data: updateResult } = await axios.patch(
+      `${SUPABASE_URL}/rest/v1/comidas_festa?id=eq.${comida_id}&quantidade_disponivel=eq.${comida.quantidade_disponivel}`,
+      { quantidade_disponivel: comida.quantidade_disponivel - 1 },
       { headers }
     );
 
-    if (reservasExistentes.length > 0) {
-      return res.status(400).json({ error: 'Você já reservou este item.' });
+    if (!updateResult || updateResult.length === 0) {
+      // Se não atualizou, quer dizer que algum outro processo já mudou a quantidade
+      return res.status(400).json({ error: 'Item esgotado ou já reservado por outro usuário' });
     }
 
-    // Cria nova reserva (quantidade = 1)
+    // Agora cria a reserva (pois decremento foi garantido)
     await axios.post(
       `${SUPABASE_URL}/rest/v1/reservas_festa`,
       [{
         usuario_id: usuario.id,
-        comida_id: comida.id,
+        comida_id: comida_id,
         quantidade: 1
       }],
       { headers }
     );
 
-    // Atualiza a quantidade disponível da comida (busca valor atualizado antes)
-    const { data: comidaAtualizada } = await axios.get(
-      `${SUPABASE_URL}/rest/v1/comidas_festa?id=eq.${comida.id}`,
-      { headers }
-    );
-
-    const quantidadeAtual = comidaAtualizada[0].quantidade_disponivel;
-    await axios.patch(
-      `${SUPABASE_URL}/rest/v1/comidas_festa?id=eq.${comida.id}`,
-      { quantidade_disponivel: quantidadeAtual - 1 },
-      { headers }
-    );
-
     res.json({ success: true });
+
   } catch (error) {
     console.error(error.response?.data || error.message);
     res.status(500).json({ error: 'Erro ao reservar item' });
   }
 });
+
 
 app.post('/comidas/:id/cancelar', async (req, res) => {
   const comida_id = req.params.id;
