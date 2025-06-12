@@ -135,7 +135,7 @@ app.post('/comidas-usuario', async (req, res) => {
 });
 
 app.post('/comidas/:id/reservar', async (req, res) => {
-  const comida_id = req.params.id;
+  const comida_id = parseInt(req.params.id);
   const { nome, telefone } = req.body;
 
   if (!nome || !telefone) {
@@ -143,70 +143,40 @@ app.post('/comidas/:id/reservar', async (req, res) => {
   }
 
   try {
-    // Busca usuário
-    const { data: usuarios } = await axios.get(
-      `${SUPABASE_URL}/rest/v1/usuarios_festa?telefone=eq.${encodeURIComponent(telefone)}`,
-      { headers }
-    );
-    if (usuarios.length === 0 || usuarios[0].nome.toLowerCase() !== nome.toLowerCase()) {
-      return res.status(400).json({ error: 'Usuário não autenticado corretamente' });
+    // Busca usuário pelo telefone
+    const { data: usuarios, error: errUser } = await supabase
+      .from('usuarios_festa')
+      .select('*')
+      .eq('telefone', telefone);
+
+    if (errUser || usuarios.length === 0) {
+      return res.status(400).json({ error: 'Usuário não encontrado' });
     }
+
     const usuario = usuarios[0];
 
-    // Busca comida atual
-    const { data: comidas } = await axios.get(
-      `${SUPABASE_URL}/rest/v1/comidas_festa?id=eq.${comida_id}`,
-      { headers }
-    );
-    if (!comidas || comidas.length === 0) {
-      return res.status(400).json({ error: 'Comida não encontrada' });
-    }
-    const comida = comidas[0];
-
-    if (comida.quantidade_disponivel <= 0) {
-      return res.status(400).json({ error: 'Item esgotado' });
+    // Confirma nome igual (case insensitive)
+    if (usuario.nome.toLowerCase() !== nome.toLowerCase()) {
+      return res.status(400).json({ error: 'Nome não corresponde ao telefone' });
     }
 
-    // Verifica se já há reserva existente para o mesmo usuário e comida
-    const { data: reservasExistentes } = await axios.get(
-      `${SUPABASE_URL}/rest/v1/reservas_festa?usuario_id=eq.${usuario.id}&comida_id=eq.${comida.id}`,
-      { headers }
-    );
+    // Chama a função PL/pgSQL para reserva atômica
+    const { error: errRpc } = await supabase.rpc('reservar_comida', {
+      p_usuario_id: usuario.id,
+      p_comida_id: comida_id,
+    });
 
-    if (reservasExistentes.length > 0) {
-      return res.status(400).json({ error: 'Você já reservou este item.' });
+    if (errRpc) {
+      return res.status(400).json({ error: errRpc.message });
     }
 
-    // Cria nova reserva (quantidade = 1)
-    await axios.post(
-      `${SUPABASE_URL}/rest/v1/reservas_festa`,
-      [{
-        usuario_id: usuario.id,
-        comida_id: comida.id,
-        quantidade: 1
-      }],
-      { headers }
-    );
-
-    // Atualiza a quantidade disponível da comida (busca valor atualizado antes)
-    const { data: comidaAtualizada } = await axios.get(
-      `${SUPABASE_URL}/rest/v1/comidas_festa?id=eq.${comida.id}`,
-      { headers }
-    );
-
-    const quantidadeAtual = comidaAtualizada[0].quantidade_disponivel;
-    await axios.patch(
-      `${SUPABASE_URL}/rest/v1/comidas_festa?id=eq.${comida.id}`,
-      { quantidade_disponivel: quantidadeAtual - 1 },
-      { headers }
-    );
-
-    res.json({ success: true });
+    return res.json({ success: true });
   } catch (error) {
-    console.error(error.response?.data || error.message);
-    res.status(500).json({ error: 'Erro ao reservar item' });
+    console.error('Erro no servidor:', error);
+    return res.status(500).json({ error: 'Erro ao reservar item' });
   }
 });
+
 
 app.post('/comidas/:id/cancelar', async (req, res) => {
   const comida_id = req.params.id;
