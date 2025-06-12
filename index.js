@@ -1,7 +1,7 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const axios = require('axios');
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import axios from 'axios';
 
 const app = express();
 app.use(cors());
@@ -16,11 +16,6 @@ const headers = {
   Accept: 'application/json',
   'Content-Type': 'application/json'
 };
-
-export default function handler(req, res) {
-  res.status(200).json({ message: 'Olá do backend no Vercel!' });
-}
-
 
 app.post('/usuarios', async (req, res) => {
   const { nome, telefone } = req.body;
