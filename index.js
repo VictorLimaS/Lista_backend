@@ -134,8 +134,9 @@ app.post('/comidas-usuario', async (req, res) => {
   }
 });
 
+//mudei
 app.post('/comidas/:id/reservar', async (req, res) => {
-  const comida_id = Number(req.params.id);
+  const comida_id = req.params.id;
   const { nome, telefone } = req.body;
 
   if (!nome || !telefone) {
@@ -143,7 +144,7 @@ app.post('/comidas/:id/reservar', async (req, res) => {
   }
 
   try {
-    // Busca usuário
+    // Busca usuário autenticado
     const { data: usuarios } = await axios.get(
       `${SUPABASE_URL}/rest/v1/usuarios_festa?telefone=eq.${encodeURIComponent(telefone)}`,
       { headers }
@@ -153,8 +154,8 @@ app.post('/comidas/:id/reservar', async (req, res) => {
     }
     const usuario = usuarios[0];
 
-    // Chama função RPC
-    const { data } = await axios.post(
+    // Chama a função RPC do Supabase que faz toda a reserva e controle de concorrência
+    const { data: resultado } = await axios.post(
       `${SUPABASE_URL}/rpc/reservar_comida`,
       {
         p_usuario_id: usuario.id,
@@ -163,16 +164,20 @@ app.post('/comidas/:id/reservar', async (req, res) => {
       { headers }
     );
 
-    if (data[0] !== 'OK') {
-      return res.status(400).json({ error: data[0] });
+    if (resultado !== 'OK') {
+      return res.status(400).json({ error: resultado });
     }
 
     res.json({ success: true });
   } catch (error) {
-    console.error(error.response?.data || error.message);
-    res.status(500).json({ error: 'Erro ao reservar item' });
+    console.error('Erro detalhado:', error.response?.data || error.message);
+    res.status(500).json({
+      error: 'Erro ao reservar item',
+      detail: error.response?.data || error.message,
+    });
   }
 });
+
 
 app.post('/comidas/:id/cancelar', async (req, res) => {
   const comida_id = req.params.id;
