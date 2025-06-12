@@ -135,7 +135,7 @@ app.post('/comidas-usuario', async (req, res) => {
 });
 
 app.post('/comidas/:id/reservar', async (req, res) => {
-  const comida_id = req.params.id;
+  const comida_id = Number(req.params.id);
   const { nome, telefone } = req.body;
 
   if (!nome || !telefone) {
@@ -153,53 +153,19 @@ app.post('/comidas/:id/reservar', async (req, res) => {
     }
     const usuario = usuarios[0];
 
-    // Busca comida atual
-    const { data: comidas } = await axios.get(
-      `${SUPABASE_URL}/rest/v1/comidas_festa?id=eq.${comida_id}`,
+    // Chama função RPC
+    const { data } = await axios.post(
+      `${SUPABASE_URL}/rpc/reservar_comida`,
+      {
+        p_usuario_id: usuario.id,
+        p_comida_id: comida_id,
+      },
       { headers }
     );
-    if (!comidas || comidas.length === 0) {
-      return res.status(400).json({ error: 'Comida não encontrada' });
+
+    if (data[0] !== 'OK') {
+      return res.status(400).json({ error: data[0] });
     }
-    const comida = comidas[0];
-
-    if (comida.quantidade_disponivel <= 0) {
-      return res.status(400).json({ error: 'Item esgotado' });
-    }
-
-    // Verifica se já há reserva existente para o mesmo usuário e comida
-    const { data: reservasExistentes } = await axios.get(
-      `${SUPABASE_URL}/rest/v1/reservas_festa?usuario_id=eq.${usuario.id}&comida_id=eq.${comida.id}`,
-      { headers }
-    );
-
-    if (reservasExistentes.length > 0) {
-      return res.status(400).json({ error: 'Você já reservou este item.' });
-    }
-
-    // Cria nova reserva (quantidade = 1)
-    await axios.post(
-      `${SUPABASE_URL}/rest/v1/reservas_festa`,
-      [{
-        usuario_id: usuario.id,
-        comida_id: comida.id,
-        quantidade: 1
-      }],
-      { headers }
-    );
-
-    // Atualiza a quantidade disponível da comida (busca valor atualizado antes)
-    const { data: comidaAtualizada } = await axios.get(
-      `${SUPABASE_URL}/rest/v1/comidas_festa?id=eq.${comida.id}`,
-      { headers }
-    );
-
-    const quantidadeAtual = comidaAtualizada[0].quantidade_disponivel;
-    await axios.patch(
-      `${SUPABASE_URL}/rest/v1/comidas_festa?id=eq.${comida.id}`,
-      { quantidade_disponivel: quantidadeAtual - 1 },
-      { headers }
-    );
 
     res.json({ success: true });
   } catch (error) {
