@@ -78,58 +78,68 @@ app.post('/comidas-usuario', async (req, res) => {
   }
   
   try {
-    // Busca usuário
+    console.log(`Buscando usuário com telefone: ${telefone}`);
+
     const { data: usuarios } = await axios.get(
       `${SUPABASE_URL}/rest/v1/usuarios_festa?telefone=eq.${encodeURIComponent(telefone)}`,
       { headers }
     );
-    if (usuarios.length === 0 || usuarios[0].nome.toLowerCase() !== nome.toLowerCase()) {
+
+    if (!usuarios || usuarios.length === 0) {
+      console.log('Usuário não encontrado');
       return res.status(400).json({ error: 'Usuário não autenticado corretamente' });
     }
+
     const usuario = usuarios[0];
+    if (!usuario.nome || usuario.nome.toLowerCase() !== nome.toLowerCase()) {
+      console.log('Nome do usuário não confere');
+      return res.status(400).json({ error: 'Usuário não autenticado corretamente' });
+    }
 
-    // Busca comidas
+    console.log(`Usuário autenticado: ${usuario.nome} (id ${usuario.id})`);
+
     const { data: comidas } = await axios.get(
-      `${SUPABASE_URL}/rest/v1/comidas_festa?select=*&order=nome.asc`,
+      `${SUPABASE_URL}/rest/v1/comidas_festa?order=nome.asc`,
       { headers }
     );
+    if (!comidas) {
+      console.log('Nenhuma comida encontrada');
+      return res.status(404).json({ error: 'Nenhuma comida disponível' });
+    }
 
-    // Busca reservas do usuário
     const { data: reservas } = await axios.get(
-      `${SUPABASE_URL}/rest/v1/reservas_festa?usuario_id=eq.${usuario.id}`,
+      `${SUPABASE_URL}/rest/v1/reservas_festa`,
       { headers }
     );
 
-    // Mapeia comidas, incluindo os primeiros nomes dos usuários que reservaram
-    const comidasComReserva = await Promise.all(comidas.map(async (comida) => {
-      // Pega as reservas para esta comida
-      const { data: reservasComida } = await axios.get(
-        `${SUPABASE_URL}/rest/v1/reservas_festa?comida_id=eq.${comida.id}`,
-        { headers }
-      );
+    const { data: usuariosReservas } = await axios.get(
+      `${SUPABASE_URL}/rest/v1/usuarios_festa`,
+      { headers }
+    );
 
-      // Para cada reserva, pega o primeiro nome do usuário
-      const nomesReservados = await Promise.all(reservasComida.map(async (reserva) => {
-        const { data: usuarioReserva } = await axios.get(
-          `${SUPABASE_URL}/rest/v1/usuarios_festa?id=eq.${reserva.usuario_id}`,
-          { headers }
-        );
-        const nomeCompleto = usuarioReserva[0]?.nome;
-        const primeiroNome = nomeCompleto ? nomeCompleto.split(' ')[0] : ''; // Pega o primeiro nome
-        return primeiroNome;
-      }));
+    const usuariosMap = new Map();
+    usuariosReservas.forEach(u => {
+      if(u.id && u.nome) usuariosMap.set(u.id, u.nome);
+    });
 
-      return {
-        ...comida,
-        reservados: nomesReservados, // Lista de primeiros nomes que reservaram a comida
-        reservado: reservas.some(r => r.comida_id === comida.id), // Verifica se o usuário fez a reserva
-      };
-    }));
+    const comidasComReserva = comidas.map(comida => {
+      if(!comida.id) {
+        console.warn('Comida sem id:', comida);
+        return null;
+      }
+      const reservasComida = reservas.filter(r => r.comida_id === comida.id);
+      const nomesReservados = reservasComida.map(r => {
+        const nomeCompleto = usuariosMap.get(r.usuario_id) || '';
+        return nomeCompleto.split(' ')[0];
+      });
+      const reservado = reservasComida.some(r => r.usuario_id === usuario.id);
+      return { ...comida, reservados: nomesReservados, reservado };
+    }).filter(Boolean);
 
     res.json({ comidas: comidasComReserva });
 
   } catch (error) {
-    console.error(error.response?.data || error.message);
+    console.error('Erro no /comidas-usuario:', error.response?.data || error.message || error);
     res.status(500).json({ error: 'Erro ao buscar comidas e reservas' });
   }
 });
@@ -143,70 +153,75 @@ app.post('/comidas/:id/reservar', async (req, res) => {
   }
 
   try {
-    // Busca usuário
+    // Busca usuário pelo telefone
     const { data: usuarios } = await axios.get(
       `${SUPABASE_URL}/rest/v1/usuarios_festa?telefone=eq.${encodeURIComponent(telefone)}`,
       { headers }
     );
+
     if (usuarios.length === 0 || usuarios[0].nome.toLowerCase() !== nome.toLowerCase()) {
       return res.status(400).json({ error: 'Usuário não autenticado corretamente' });
     }
     const usuario = usuarios[0];
 
-    // Busca comida atual
+    // Busca comida pelo id
     const { data: comidas } = await axios.get(
       `${SUPABASE_URL}/rest/v1/comidas_festa?id=eq.${comida_id}`,
       { headers }
     );
-    if (!comidas || comidas.length === 0) {
-      return res.status(400).json({ error: 'Comida não encontrada' });
+    if (comidas.length === 0) {
+      return res.status(404).json({ error: 'Comida não encontrada' });
     }
     const comida = comidas[0];
 
     if (comida.quantidade_disponivel <= 0) {
-      return res.status(400).json({ error: 'Item esgotado' });
+      return res.status(400).json({ error: 'Comida esgotada' });
     }
 
-    // Verifica se já há reserva existente para o mesmo usuário e comida
+    // Verifica se usuário já reservou esta comida
     const { data: reservasExistentes } = await axios.get(
-      `${SUPABASE_URL}/rest/v1/reservas_festa?usuario_id=eq.${usuario.id}&comida_id=eq.${comida.id}`,
+      `${SUPABASE_URL}/rest/v1/reservas_festa?comida_id=eq.${comida_id}&usuario_id=eq.${usuario.id}`,
       { headers }
     );
-
     if (reservasExistentes.length > 0) {
-      return res.status(400).json({ error: 'Você já reservou este item.' });
+      return res.status(400).json({ error: 'Usuário já reservou essa comida' });
     }
 
-    // Cria nova reserva (quantidade = 1)
-    await axios.post(
+    // Cria reserva (envia como array)
+    const reserva = [{
+      comida_id,
+      usuario_id: usuario.id,
+      data_reserva: new Date().toISOString(),
+      quantidade: 1,
+    }];
+
+    const { data, status } = await axios.post(
       `${SUPABASE_URL}/rest/v1/reservas_festa`,
-      [{
-        usuario_id: usuario.id,
-        comida_id: comida.id,
-        quantidade: 1
-      }],
-      { headers }
+      reserva,
+      {
+        headers: { ...headers, Prefer: 'return=representation' }
+      }
     );
 
-    // Atualiza a quantidade disponível da comida (busca valor atualizado antes)
-    const { data: comidaAtualizada } = await axios.get(
-      `${SUPABASE_URL}/rest/v1/comidas_festa?id=eq.${comida.id}`,
-      { headers }
-    );
+    if (status !== 201) {
+      throw new Error('Falha ao criar reserva');
+    }
 
-    const quantidadeAtual = comidaAtualizada[0].quantidade_disponivel;
+    // Atualiza quantidade disponível da comida (decrementa 1)
     await axios.patch(
-      `${SUPABASE_URL}/rest/v1/comidas_festa?id=eq.${comida.id}`,
-      { quantidade_disponivel: quantidadeAtual - 1 },
+      `${SUPABASE_URL}/rest/v1/comidas_festa?id=eq.${comida_id}`,
+      { quantidade_disponivel: comida.quantidade_disponivel - 1 },
       { headers }
     );
 
-    res.json({ success: true });
+    res.json({ message: 'Reserva feita com sucesso', reserva: data[0] });
+
   } catch (error) {
     console.error(error.response?.data || error.message);
-    res.status(500).json({ error: 'Erro ao reservar item' });
+    res.status(500).json({ error: error.response?.data?.message || 'Erro ao reservar comida' });
   }
 });
+
 
 app.post('/comidas/:id/cancelar', async (req, res) => {
   const comida_id = req.params.id;
