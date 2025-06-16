@@ -4,16 +4,12 @@ import cors from 'cors';
 import axios from 'axios';
 
 const app = express();
-
-// Configuração do CORS - Permitir todas as origens para fins de desenvolvimento
-app.use(cors());  // Usar CORS sem configuração restritiva
+app.use(cors());
 app.use(express.json());
 
-// Variáveis de ambiente
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
-// Cabeçalhos para autenticação no Supabase
 const headers = {
   apikey: SUPABASE_KEY,
   Authorization: `Bearer ${SUPABASE_KEY}`,
@@ -21,7 +17,6 @@ const headers = {
   'Content-Type': 'application/json'
 };
 
-// Rota POST /usuarios
 app.post('/usuarios', async (req, res) => {
   const { nome, telefone } = req.body;
   if (!nome || !telefone) {
@@ -29,19 +24,19 @@ app.post('/usuarios', async (req, res) => {
   }
 
   try {
-    // Buscar usuários por telefone
+    // Busca por telefone
     const { data: usuariosPorTelefone } = await axios.get(
       `${SUPABASE_URL}/rest/v1/usuarios_festa?telefone=eq.${encodeURIComponent(telefone)}`,
       { headers }
     );
 
-    // Buscar usuários por nome exato
+    // Busca por nome exato
     const { data: usuariosPorNome } = await axios.get(
       `${SUPABASE_URL}/rest/v1/usuarios_festa?nome=eq.${encodeURIComponent(nome)}`,
       { headers }
     );
 
-    // Verificar se existe usuário com telefone mas nome diferente
+    // Se existe o mesmo telefone mas nome diferente → rejeita
     if (usuariosPorTelefone.length > 0) {
       const usuarioExistente = usuariosPorTelefone[0];
       if (usuarioExistente.nome.toLowerCase() !== nome.toLowerCase()) {
@@ -50,17 +45,18 @@ app.post('/usuarios', async (req, res) => {
         });
       }
 
+      // Nome e telefone batem → login válido
       return res.json({ success: true, usuario: usuarioExistente });
     }
 
-    // Verificar se existe usuário com nome mas outro telefone
+    // Se existe o mesmo nome mas com outro telefone → rejeita
     if (usuariosPorNome.length > 0) {
       return res.status(400).json({
         error: `Já existe um usuário com este nome, mas usando outro telefone.`,
       });
     }
 
-    // Se não existir, criar novo usuário
+    // Nome e telefone são novos → cria usuário
     const { data: novoUsuario } = await axios.post(
       `${SUPABASE_URL}/rest/v1/usuarios_festa`,
       [{ nome, telefone }],
@@ -68,13 +64,13 @@ app.post('/usuarios', async (req, res) => {
     );
 
     return res.json({ success: true, usuario: novoUsuario[0] });
+
   } catch (error) {
     console.error(error.response?.data || error.message);
     res.status(500).json({ error: 'Erro ao validar ou registrar usuário' });
   }
 });
 
-// Rota POST /comidas-usuario
 app.post('/comidas-usuario', async (req, res) => {
   const { nome, telefone } = req.body;
   if (!nome || !telefone) {
@@ -83,6 +79,7 @@ app.post('/comidas-usuario', async (req, res) => {
   
   try {
     console.log(`Buscando usuário com telefone: ${telefone}`);
+
     const { data: usuarios } = await axios.get(
       `${SUPABASE_URL}/rest/v1/usuarios_festa?telefone=eq.${encodeURIComponent(telefone)}`,
       { headers }
@@ -105,7 +102,6 @@ app.post('/comidas-usuario', async (req, res) => {
       `${SUPABASE_URL}/rest/v1/comidas_festa?order=nome.asc`,
       { headers }
     );
-
     if (!comidas) {
       console.log('Nenhuma comida encontrada');
       return res.status(404).json({ error: 'Nenhuma comida disponível' });
@@ -148,13 +144,130 @@ app.post('/comidas-usuario', async (req, res) => {
   }
 });
 
-// Rota para responder a OPTIONS (necessário para CORS)
-app.options('*', (req, res) => {
-  res.status(200).send();
+app.post('/comidas/:id/reservar', async (req, res) => {
+  const comida_id = req.params.id;
+  const { nome, telefone } = req.body;
+
+  if (!nome || !telefone) {
+    return res.status(400).json({ error: 'Nome e telefone são obrigatórios' });
+  }
+
+  try {
+    // Busca usuário pelo telefone
+    const { data: usuarios } = await axios.get(
+      `${SUPABASE_URL}/rest/v1/usuarios_festa?telefone=eq.${encodeURIComponent(telefone)}`,
+      { headers }
+    );
+
+    if (usuarios.length === 0 || usuarios[0].nome.toLowerCase() !== nome.toLowerCase()) {
+      return res.status(400).json({ error: 'Usuário não autenticado corretamente' });
+    }
+    const usuario = usuarios[0];
+
+    // Busca comida pelo id
+    const { data: comidas } = await axios.get(
+      `${SUPABASE_URL}/rest/v1/comidas_festa?id=eq.${comida_id}`,
+      { headers }
+    );
+    if (comidas.length === 0) {
+      return res.status(404).json({ error: 'Comida não encontrada' });
+    }
+    const comida = comidas[0];
+
+    if (comida.quantidade_disponivel <= 0) {
+      return res.status(400).json({ error: 'Comida esgotada' });
+    }
+
+    // Verifica se usuário já reservou esta comida
+    const { data: reservasExistentes } = await axios.get(
+      `${SUPABASE_URL}/rest/v1/reservas_festa?comida_id=eq.${comida_id}&usuario_id=eq.${usuario.id}`,
+      { headers }
+    );
+    if (reservasExistentes.length > 0) {
+      return res.status(400).json({ error: 'Usuário já reservou essa comida' });
+    }
+
+    // Cria reserva (envia como array)
+    const reserva = [{
+      comida_id,
+      usuario_id: usuario.id,
+      data_reserva: new Date().toISOString(),
+      quantidade: 1,
+    }];
+
+    const { data, status } = await axios.post(
+      `${SUPABASE_URL}/rest/v1/reservas_festa`,
+      reserva,
+      {
+        headers: { ...headers, Prefer: 'return=representation' }
+      }
+    );
+
+    if (status !== 201) {
+      throw new Error('Falha ao criar reserva');
+    }
+
+    // Atualiza quantidade disponível da comida (decrementa 1)
+    await axios.patch(
+      `${SUPABASE_URL}/rest/v1/comidas_festa?id=eq.${comida_id}`,
+      { quantidade_disponivel: comida.quantidade_disponivel - 1 },
+      { headers }
+    );
+
+    res.json({ message: 'Reserva feita com sucesso', reserva: data[0] });
+
+  } catch (error) {
+    console.error(error.response?.data || error.message);
+    res.status(500).json({ error: error.response?.data?.message || 'Erro ao reservar comida' });
+  }
 });
 
-// Iniciar servidor
-const PORT = process.env.PORT || 3000;
+
+app.post('/comidas/:id/cancelar', async (req, res) => {
+  const comida_id = req.params.id;
+  const { nome, telefone } = req.body;
+
+  if (!nome || !telefone) {
+    return res.status(400).json({ error: 'Nome e telefone são obrigatórios' });
+  }
+
+  try {
+    // Busca usuário
+    const { data: usuarios } = await axios.get(
+      `${SUPABASE_URL}/rest/v1/usuarios_festa?telefone=eq.${encodeURIComponent(telefone)}`,
+      { headers }
+    );
+    if (usuarios.length === 0 || usuarios[0].nome.toLowerCase() !== nome.toLowerCase()) {
+      return res.status(400).json({ error: 'Usuário não autenticado corretamente' });
+    }
+    const usuario = usuarios[0];
+
+    // Busca reserva existente
+    const { data: reservasExistentes } = await axios.get(
+      `${SUPABASE_URL}/rest/v1/reservas_festa?usuario_id=eq.${usuario.id}&comida_id=eq.${comida_id}`,
+      { headers }
+    );
+    if (reservasExistentes.length === 0) {
+      return res.status(400).json({ error: 'Reserva não encontrada para cancelar' });
+    }
+    const reserva = reservasExistentes[0];
+
+    // Deleta a reserva
+    await axios.delete(
+      `${SUPABASE_URL}/rest/v1/reservas_festa?id=eq.${reserva.id}`,
+      { headers }
+    );
+
+    // NÃO altera quantidade_disponivel aqui (deixe a lógica que você já tem cuidar disso)
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error.response?.data || error.message);
+    res.status(500).json({ error: 'Erro ao cancelar reserva' });
+  }
+});
+
+const PORT = process.env.PORT;
 app.listen(PORT, () => {
   console.log(`✅ Backend rodando em http://localhost:${PORT}`);
 });
