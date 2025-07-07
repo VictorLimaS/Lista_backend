@@ -76,7 +76,7 @@ app.post('/comidas-usuario', async (req, res) => {
   if (!nome || !telefone) {
     return res.status(400).json({ error: 'Nome e telefone são obrigatórios' });
   }
-  
+
   try {
     console.log(`Buscando usuário com telefone: ${telefone}`);
 
@@ -119,11 +119,11 @@ app.post('/comidas-usuario', async (req, res) => {
 
     const usuariosMap = new Map();
     usuariosReservas.forEach(u => {
-      if(u.id && u.nome) usuariosMap.set(u.id, u.nome);
+      if (u.id && u.nome) usuariosMap.set(u.id, u.nome);
     });
 
     const comidasComReserva = comidas.map(comida => {
-      if(!comida.id) {
+      if (!comida.id) {
         console.warn('Comida sem id:', comida);
         return null;
       }
@@ -222,7 +222,6 @@ app.post('/comidas/:id/reservar', async (req, res) => {
   }
 });
 
-
 app.post('/comidas/:id/cancelar', async (req, res) => {
   const comida_id = req.params.id;
   const { nome, telefone } = req.body;
@@ -266,6 +265,68 @@ app.post('/comidas/:id/cancelar', async (req, res) => {
     res.status(500).json({ error: 'Erro ao cancelar reserva' });
   }
 });
+
+app.get('/relatorio/usuarios', async (req, res) => {
+  try {
+    // Busca usuários
+    const { data: usuarios } = await axios.get(
+      `${SUPABASE_URL}/rest/v1/usuarios_festa?order=nome.asc`,
+      { headers }
+    );
+
+    // Busca comidas
+    const { data: comidas } = await axios.get(
+      `${SUPABASE_URL}/rest/v1/comidas_festa`,
+      { headers }
+    );
+
+    // Busca reservas
+    const { data: reservas } = await axios.get(
+      `${SUPABASE_URL}/rest/v1/reservas_festa`,
+      { headers }
+    );
+
+    // Mapeia comidas por id para nome rápido
+    const comidasMap = new Map(comidas.map(c => [c.id, c.nome]));
+
+    // Para cada usuário, acha reserva
+    const resultado = usuarios.map(u => {
+      const reserva = reservas.find(r => r.usuario_id === u.id);
+      return {
+        nome: u.nome,
+        telefone: u.telefone,
+        item: reserva ? comidasMap.get(reserva.comida_id) || '0' : '0',
+      };
+    });
+
+    res.json(resultado);
+
+  } catch (error) {
+    console.error('Erro no /relatorio/usuarios:', error.response?.data || error.message || error);
+    res.status(500).json({ error: 'Erro ao gerar relatório de usuários' });
+  }
+});
+
+app.get('/relatorio/comidas-faltantes', async (req, res) => {
+  try {
+    const { data: comidas } = await axios.get(
+      `${SUPABASE_URL}/rest/v1/comidas_festa?quantidade_disponivel=gt.0&order=nome.asc`,
+      { headers }
+    );
+
+    const resultado = comidas.map(c => ({
+      comida: c.nome,
+      quantidade: c.quantidade_disponivel
+    }));
+
+    res.json(resultado);
+
+  } catch (error) {
+    console.error('Erro no /relatorio/comidas-faltantes:', error.response?.data || error.message || error);
+    res.status(500).json({ error: 'Erro ao gerar relatório de comidas faltantes' });
+  }
+});
+
 
 const PORT = process.env.PORT;
 app.listen(PORT, () => {
